@@ -9,6 +9,7 @@ use osmxq::{XQ,Record};
 mod value;
 mod progress;
 pub use progress::Progress;
+use rayon::prelude::*;
 
 pub const BACKREF_PREFIX: u8 = 1;
 pub const REF_PREFIX: u8 = 2;
@@ -47,16 +48,27 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
     let (sender,receiver) = channel::bounded::<Decoded>(1_000);
 
     let reader = std::thread::spawn(move || {
-      let sc = sender.clone();
-      osmpbf::ElementReader::new(pbf).par_map_reduce(
-        move |element| {
-          let r = Decoded::from_pbf_element(&element).unwrap();
-          let s = sc.clone();
-          s.send(r).unwrap();
-        }, 
-        || {},
-        |_, _| {},
-      ).unwrap();
+      if let Err(err) = osmpbf::blob::BlobReader::new(pbf)
+            //.par_bridge()
+            .try_for_each(move |blob| {
+                use osmpbf::blob::BlobDecode;
+                
+                match blob?.decode() {
+                    Ok(BlobDecode::OsmHeader(_)) | Ok(BlobDecode::Unknown(_)) => {}
+                    Ok(BlobDecode::OsmData(block)) => {
+                        let sender = sender.clone();
+                                    block.for_each_element(move |element| {
+                            let r = Decoded::from_pbf_element(&element).unwrap();
+                            sender.send(r).unwrap();
+                        });
+                                }
+                    Err(e) => return Err(e),
+                }
+                Ok(())
+            }) {
+                eprintln!("failed reader: {:?}", err);
+            }
+
     });
 
     {
@@ -69,11 +81,13 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
               let mut xq = self.xq.lock().unwrap();
               if let Err(err) = xq.add_records(&records) {
                   self.progress.write().unwrap().push_err("pbf", &err);
+              } else {
+                  self.progress.write().unwrap().add("pbf", records.len());
               }
-              self.progress.write().unwrap().add("pbf", records.len());
               records.clear();
           }
       }
+
       if !records.is_empty() {
           let mut xq = self.xq.lock().unwrap();
           let res = xq.add_records(&records);
