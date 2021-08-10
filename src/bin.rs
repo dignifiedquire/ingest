@@ -51,12 +51,12 @@ fn run() -> Result<(),Error> {
         open_eyros(&std::path::Path::new(&edb_dir.unwrap()))?,
         &["pbf","process"]
       );
-      let pbf_stream: Box<dyn std::io::Read+Send> = match pbf_file.as_str() {
-        "-" => Box::new(std::io::stdin()),
-        x => Box::new(std::fs::File::open(x)?),
+      let pbf_stream = match pbf_file.as_str() {
+        "-" => unimplemented!(""),
+        _x => pbf_file,
       };
       let p = Monitor::open(ingest.progress.clone());
-      ingest.load_pbf(pbf_stream)?;
+      ingest.load_pbf(pbf_stream.into())?;
       ingest.process();
       p.end();
       eprintln![""];
@@ -76,12 +76,12 @@ fn run() -> Result<(),Error> {
         open_eyros(&std::path::Path::new(&edb_dir.unwrap()))?,
         &["pbf"]
       );
-      let pbf_stream: Box<dyn std::io::Read+Send> = match pbf_file.as_str() {
-        "-" => Box::new(std::io::stdin()),
-        x => Box::new(std::fs::File::open(x)?),
+      let pbf_stream = match pbf_file.as_str() {
+        "-" => unimplemented!(),
+        _x => pbf_file,
       };
       let p = Monitor::open(ingest.progress.clone());
-      ingest.load_pbf(pbf_stream)?;
+      ingest.load_pbf(pbf_stream.into())?;
       p.end();
       eprintln![""];
     },

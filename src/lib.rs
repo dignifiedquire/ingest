@@ -43,12 +43,13 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
       progress: Arc::new(RwLock::new(Progress::new(stages))),
     }
   }
-  pub fn load_pbf<R: std::io::Read+Send+'static>(&mut self, pbf: R) -> Result<(),Error> {
+  pub fn load_pbf(&mut self, pbf: std::path::PathBuf) -> Result<(),Error> {
     self.progress.write().unwrap().start("pbf");
     let (sender,receiver) = channel::bounded::<Decoded>(1_000);
 
     let reader = std::thread::spawn(move || {
-      if let Err(err) = osmpbf::blob::BlobReader::new(pbf)
+        let reader = unsafe { osmpbf::mmap_blob::Mmap::from_path(pbf) }.unwrap();
+        if let Err(err) = reader.blob_iter()
             //.par_bridge()
             .try_for_each(move |blob| {
                 use osmpbf::blob::BlobDecode;
