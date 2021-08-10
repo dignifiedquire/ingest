@@ -28,7 +28,7 @@ impl Record for Decoded {
       Decoded::Relation(_relation) => None,
     }
   }
-  fn pack(records: &HashMap<RecordId,Self>) -> Vec<u8> where Self: Sized {
+  fn pack<R: osmxq::RW>(records: &HashMap<RecordId,Self>, file: &mut R) -> std::io::Result<()> where Self: Sized {
     let mut size = 0;
     size += varint::length(records.len() as u64);
     for (r_id,r) in records {
@@ -60,44 +60,46 @@ impl Record for Decoded {
         },
       }
     }
-    let mut buf = vec![0u8;size];
+    file.set_len(size as u64)?;
     let mut offset = 0;
-    offset += varint::encode(records.len() as u64, &mut buf[offset..]).unwrap();
+    offset += varint::encode(records.len() as u64, &mut file[offset..]).unwrap();
     for (r_id,r) in records {
       //assert_eq![*r_id, r.get_id(), "r_id != r.get_id()"];
-      offset += varint::encode(*r_id, &mut buf[offset..]).unwrap();
+      offset += varint::encode(*r_id, &mut file[offset..]).unwrap();
       match &r {
         Decoded::Node(node) => {
-          offset += node.lon.write_bytes_be(&mut buf[offset..]).unwrap();
-          offset += node.lat.write_bytes_be(&mut buf[offset..]).unwrap();
-          offset += varint::encode(node.feature_type, &mut buf[offset..]).unwrap();
-          buf[offset..offset+node.labels.len()].copy_from_slice(&node.labels);
+          offset += node.lon.write_bytes_be(&mut file[offset..]).unwrap();
+          offset += node.lat.write_bytes_be(&mut file[offset..]).unwrap();
+          offset += varint::encode(node.feature_type, &mut file[offset..]).unwrap();
+          file[offset..offset+node.labels.len()].copy_from_slice(&node.labels);
           offset += node.labels.len();
         },
         Decoded::Way(way) => {
           let fta = way.feature_type*2 + match way.is_area { false => 0, true => 1};
-          offset += varint::encode(fta, &mut buf[offset..]).unwrap();
-          offset += varint::encode(way.refs.len() as u64, &mut buf[offset..]).unwrap();
+          offset += varint::encode(fta, &mut file[offset..]).unwrap();
+          offset += varint::encode(way.refs.len() as u64, &mut file[offset..]).unwrap();
           for wr in way.refs.iter() {
-            offset += varint::encode(*wr as u64, &mut buf[offset..]).unwrap();
+            offset += varint::encode(*wr as u64, &mut file[offset..]).unwrap();
           }
-          buf[offset..offset+way.labels.len()].copy_from_slice(&way.labels);
+          file[offset..offset+way.labels.len()].copy_from_slice(&way.labels);
           offset += way.labels.len();
         },
         Decoded::Relation(relation) => {
           let fta = relation.feature_type*2 + match relation.is_area { false => 0, true => 1};
-          offset += varint::encode(fta, &mut buf[offset..]).unwrap();
-          offset += varint::encode(relation.members.len() as u64, &mut buf[offset..]).unwrap();
+          offset += varint::encode(fta, &mut file[offset..]).unwrap();
+          offset += varint::encode(relation.members.len() as u64, &mut file[offset..]).unwrap();
           for m in relation.members.iter() {
-            offset += varint::encode(*m as u64, &mut buf[offset..]).unwrap();
+            offset += varint::encode(*m as u64, &mut file[offset..]).unwrap();
           }
-          buf[offset..offset+relation.labels.len()].copy_from_slice(&relation.labels);
+          file[offset..offset+relation.labels.len()].copy_from_slice(&relation.labels);
           offset += relation.labels.len();
         },
       }
     }
+    file.set_offset(offset);
+    file.flush()?;
     //assert_eq![buf.len(), offset, "buf.len() != offset ({} != {})", buf.len(), offset];
-    buf
+    Ok(())
   }
   fn unpack(buf: &[u8], records: &mut HashMap<u64, Self>) -> Result<usize,Error> where Self: Sized {
     if buf.is_empty() { return Ok(0) }
