@@ -14,8 +14,7 @@ pub const BACKREF_PREFIX: u8 = 1;
 pub const REF_PREFIX: u8 = 2;
 
 use std::collections::HashMap;
-use async_std::{sync::{Arc,Mutex,RwLock},task,channel};
-use futures::future::join_all;
+use async_std::{sync::{Arc,Mutex,RwLock},task,channel,prelude::*};
 
 type NodeDeps = HashMap<u64,(f32,f32)>;
 type WayDeps = HashMap<u64,Vec<u64>>;
@@ -45,48 +44,59 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
   pub async fn load_pbf<R: std::io::Read+Send+'static>(&mut self, pbf: R) -> Result<(),Error> {
     self.progress.write().await.start("pbf");
     let (sender,receiver) = channel::bounded::<Decoded>(1_000);
-    let mut work = vec![];
-    work.push(task::spawn(async move {
+
+    let reader = std::thread::spawn(move || {
       let sc = sender.clone();
-      osmpbf::ElementReader::new(pbf).for_each(move |element| {
-        let r = Decoded::from_pbf_element(&element).unwrap();
-        let s = sc.clone();
-        task::block_on(async move {
-          s.send(r).await.unwrap();
-        });
-      }).unwrap();
+      osmpbf::ElementReader::new(pbf).par_map_reduce(
+        move |element| {
+          let r = Decoded::from_pbf_element(&element).unwrap();
+          let s = sc.clone();
+          task::block_on(async move {
+            s.send(r).await.unwrap();
+          });
+        }, 
+        || {},
+        |_, _| {},
+      ).unwrap();
       sender.close();
-    }));
-    {
+    });
+
+    let writer = {
+      const BATCH_SIZE: usize = 100_000;
+      
       let xqc = self.xq.clone();
       let progress = self.progress.clone();
-      work.push(task::spawn(async move {
-        let mut records = Vec::with_capacity(100_000);
-        while let Ok(record) = receiver.recv().await {
-          records.push(record);
-          if records.len() >= 100_000 {
-            if let Err(err) = xqc.lock().await.add_records(&records).await {
-              progress.write().await.push_err("pbf", &err);
-            }
-            progress.write().await.add("pbf", records.len());
-            records.clear();
+          
+      task::spawn(async move {
+          let mut records = Vec::with_capacity(BATCH_SIZE);
+          while let Ok(record) = receiver.recv().await {
+              records.push(record);
+              if records.len() >= BATCH_SIZE {
+                  if let Err(err) = xqc.lock().await.add_records(&records).await {
+                      progress.write().await.push_err("pbf", &err);
+                  }
+                  progress.write().await.add("pbf", records.len());
+                  records.clear();
+              }
           }
-        }
-        if !records.is_empty() {
-          if let Err(err) = xqc.lock().await.add_records(&records).await {
-            progress.write().await.push_err("pbf", &err);
+          if !records.is_empty() {
+              if let Err(err) = xqc.lock().await.add_records(&records).await {
+                  progress.write().await.push_err("pbf", &err);
+              }
+              progress.write().await.add("pbf", records.len());
           }
-          progress.write().await.add("pbf", records.len());
-        }
-        {
-          let mut xq = xqc.lock().await;
-          xq.finish().await.unwrap();
-          xq.flush().await.unwrap();
-        }
-      }));
-    }
-    join_all(work).await;
+          {
+              let mut xq = xqc.lock().await;
+              xq.finish().await.unwrap();
+              xq.flush().await.unwrap();
+          }
+      })
+    };
+
+    writer.join(task::spawn_blocking(move || { reader.join().unwrap() })).await;
+
     self.progress.write().await.end("pbf");
+
     Ok(())
   }
 

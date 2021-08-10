@@ -1,6 +1,7 @@
 use crate::encoder::{Decoded,DecodedNode,DecodedWay,DecodedRelation};
 use crate::Error;
-use std::collections::HashMap;
+// use std::collections::HashMap;
+use ahash::AHashMap as HashMap;
 use desert::{varint,CountBytesBE,ToBytesBE,FromBytesBE};
 use osmxq::{Record,RecordId,Position};
 
@@ -99,9 +100,8 @@ impl Record for Decoded {
     //assert_eq![buf.len(), offset, "buf.len() != offset ({} != {})", buf.len(), offset];
     buf
   }
-  fn unpack(buf: &[u8]) -> Result<HashMap<RecordId,Self>,Error> where Self: Sized {
-    let mut records = HashMap::new();
-    if buf.is_empty() { return Ok(records) }
+  fn unpack(buf: &[u8], records: &mut HashMap<u64, Self>) -> Result<usize,Error> where Self: Sized {
+    if buf.is_empty() { return Ok(0) }
     let mut offset = 0;
     let (s,record_len) = varint::decode(&buf[offset..]).unwrap();
     offset += s;
@@ -161,6 +161,6 @@ impl Record for Decoded {
       });
     }
     //assert_eq![buf.len(), offset, "buf.len() != offset ({} != {})", buf.len(), offset];
-    Ok(records)
+    Ok(offset)
   }
 }

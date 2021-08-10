@@ -29,7 +29,9 @@ async-recursion = "0.3.2"
 argmap = "1.1.0"
 indoc = "1.0.3"
 futures = "0.3.13"
-osmxq = "1.0.0"
+osmxq = "4.0.0"
+num_cpus = "1.13.0"
+ahash = "0.7.4"
 
 [[bench]]
 name = "large_area"
@@ -38,4 +40,8 @@ harness = false
 [dev-dependencies]
 earcutr = "0.1.1"
 pretty_assertions = "0.7.1"
+rocksdb = "0.17.0"
 tempfile = "3.2.0"
+
+[patch.crates-io]
+osmxq = { path = "../osmxq" }
