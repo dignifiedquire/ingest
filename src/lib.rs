@@ -47,10 +47,9 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
     self.progress.write().unwrap().start("pbf");
     let (sender,receiver) = channel::bounded::<Decoded>(1_000);
 
-    let reader = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         let reader = unsafe { osmpbf::mmap_blob::Mmap::from_path(pbf) }.unwrap();
         if let Err(err) = reader.blob_iter()
-            //.par_bridge()
             .try_for_each(move |blob| {
                 use osmpbf::blob::BlobDecode;
                 
@@ -58,7 +57,7 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
                     Ok(BlobDecode::OsmHeader(_)) | Ok(BlobDecode::Unknown(_)) => {}
                     Ok(BlobDecode::OsmData(block)) => {
                         let sender = sender.clone();
-                                    block.for_each_element(move |element| {
+                        block.for_each_element(move |element| {
                             let r = Decoded::from_pbf_element(&element).unwrap();
                             sender.send(r).unwrap();
                         });
@@ -72,40 +71,50 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
 
     });
 
-    {
-      const BATCH_SIZE: usize = 100_000;
-      let mut records = Vec::with_capacity(BATCH_SIZE);      
+    const BATCH_SIZE: usize = 50_000;
+    const NUM_WORKERS: usize = 4;
+    let mut workers = Vec::with_capacity(NUM_WORKERS);
+    for _ in 0..NUM_WORKERS {
+        let progress = self.progress.clone();
+        let xq = self.xq.clone();
+        let receiver = receiver.clone();
+        
+        workers.push(std::thread::spawn(move || {
+            let mut records = Vec::with_capacity(BATCH_SIZE);      
 
-      while let Ok(record) = receiver.recv() {
-          records.push(record);
-          if records.len() >= BATCH_SIZE {
-              let mut xq = self.xq.lock().unwrap();
-              if let Err(err) = xq.add_records(&records) {
-                  self.progress.write().unwrap().push_err("pbf", &err);
-              } else {
-                  self.progress.write().unwrap().add("pbf", records.len());
-              }
-              records.clear();
-          }
-      }
+            while let Ok(record) = receiver.recv() {
+                records.push(record);
+                if records.len() >= BATCH_SIZE {
+                    let mut xq = xq.lock().unwrap();
+                    if let Err(err) = xq.add_records(&records) {
+                        progress.write().unwrap().push_err("pbf", &err);
+                    } else {
+                        progress.write().unwrap().add("pbf", records.len());
+                    }
+                    records.clear();
+                }
+            }
+            if !records.is_empty() {
+                let mut xq = xq.lock().unwrap();
+                let res = xq.add_records(&records);
 
-      if !records.is_empty() {
-          let mut xq = self.xq.lock().unwrap();
-          let res = xq.add_records(&records);
-
-          if let Err(err) = res {
-              self.progress.write().unwrap().push_err("pbf", &err);
-          }
-          self.progress.write().unwrap().add("pbf", records.len());
-      }
-      {
-          let mut xq = self.xq.lock().unwrap();
-          xq.finish().unwrap();
-          xq.flush().unwrap();
-      }
+                if let Err(err) = res {
+                    progress.write().unwrap().push_err("pbf", &err);
+                }
+                progress.write().unwrap().add("pbf", records.len());
+            }
+        }));
     }
 
-    reader.join().unwrap();
+    for worker in workers.into_iter() {
+        worker.join().unwrap();
+    }
+
+    {
+        let mut xq = self.xq.lock().unwrap();
+        xq.finish().unwrap();
+        xq.flush().unwrap();
+    }
 
     self.progress.write().unwrap().end("pbf");
 

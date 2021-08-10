@@ -45,3 +45,7 @@ tempfile = "3.2.0"
 
 [patch.crates-io]
 osmxq = { path = "../osmxq" }
+
+[profile.release]
+codegen-units = 1
+lto = true
