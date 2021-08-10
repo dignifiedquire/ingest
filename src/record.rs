@@ -97,7 +97,7 @@ impl Record for Decoded {
       }
     }
     file.set_offset(offset);
-    file.flush()?;
+    //file.flush()?;
     //assert_eq![buf.len(), offset, "buf.len() != offset ({} != {})", buf.len(), offset];
     Ok(())
   }
