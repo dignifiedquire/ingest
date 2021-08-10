@@ -1,12 +1,12 @@
 #![feature(backtrace)]
+
 use peermaps_ingest::{Ingest,EDB,Progress};
-use async_std::{prelude::*,sync::{Arc,RwLock},task,stream};
+use std::{sync::{Arc,RwLock}};
 use osmxq::XQ;
 
 type Error = Box<dyn std::error::Error+Send+Sync>;
 
-#[async_std::main]
-async fn main() -> Result<(),Error> {
+fn main() -> Result<(),Error> {
   if let Err(err) = run().await {
     match err.backtrace().map(|bt| (bt,bt.status())) {
       Some((bt,std::backtrace::BacktraceStatus::Captured)) => {
@@ -19,7 +19,7 @@ async fn main() -> Result<(),Error> {
   Ok(())
 }
 
-async fn run() -> Result<(),Error> {
+fn run() -> Result<(),Error> {
   let (args,argv) = argmap::new()
     .booleans(&["help","h"])
     .parse(std::env::args());
@@ -47,8 +47,8 @@ async fn run() -> Result<(),Error> {
         std::process::exit(1);
       }
       let mut ingest = Ingest::new(
-        XQ::open_from_path(&xq_dir.unwrap()).await?,
-        open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
+        XQ::open_from_path(&xq_dir.unwrap())?,
+        open_eyros(&std::path::Path::new(&edb_dir.unwrap()))?,
         &["pbf","process"]
       );
       let pbf_stream: Box<dyn std::io::Read+Send> = match pbf_file.as_str() {
@@ -56,9 +56,9 @@ async fn run() -> Result<(),Error> {
         x => Box::new(std::fs::File::open(x)?),
       };
       let mut p = Monitor::open(ingest.progress.clone());
-      ingest.load_pbf(pbf_stream).await?;
-      ingest.process().await;
-      p.end().await;
+      ingest.load_pbf(pbf_stream)?;
+      ingest.process();
+      p.end();
       eprintln![""];
     },
     Some("pbf") => {
@@ -72,8 +72,8 @@ async fn run() -> Result<(),Error> {
         std::process::exit(1);
       }
       let mut ingest = Ingest::new(
-        XQ::open_from_path(&xq_dir.unwrap()).await?,
-        open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
+        XQ::open_from_path(&xq_dir.unwrap())?,
+        open_eyros(&std::path::Path::new(&edb_dir.unwrap()))?,
         &["pbf"]
       );
       let pbf_stream: Box<dyn std::io::Read+Send> = match pbf_file.as_str() {
@@ -81,8 +81,8 @@ async fn run() -> Result<(),Error> {
         x => Box::new(std::fs::File::open(x)?),
       };
       let mut p = Monitor::open(ingest.progress.clone());
-      ingest.load_pbf(pbf_stream).await?;
-      p.end().await;
+      ingest.load_pbf(pbf_stream)?;
+      p.end();
       eprintln![""];
     },
     Some("process") => {
@@ -92,13 +92,13 @@ async fn run() -> Result<(),Error> {
         std::process::exit(1);
       }
       let mut ingest = Ingest::new(
-        XQ::open_from_path(&xq_dir.unwrap()).await?,
-        open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?,
+        XQ::open_from_path(&xq_dir.unwrap())?,
+        open_eyros(&std::path::Path::new(&edb_dir.unwrap()))?,
         &["process"]
       );
       let mut p = Monitor::open(ingest.progress.clone());
-      ingest.process().await;
-      p.end().await;
+      ingest.process();
+      p.end();
       eprintln![""];
     },
     Some("changeset") => {
@@ -112,14 +112,14 @@ async fn run() -> Result<(),Error> {
         std::process::exit(1);
       }
       let mut ingest = Ingest::new(
-        XQ::open_from_path(&xq_dir.unwrap()).await?,
-        open_eyros(&std::path::Path::new(&edb_dir.unwrap())).await?
+        XQ::open_from_path(&xq_dir.unwrap())?,
+        open_eyros(&std::path::Path::new(&edb_dir.unwrap()))?
       );
       let o5c_stream: Box<dyn io::Read+Send+Unpin> = match o5c_file.unwrap().as_str() {
         "-" => Box::new(io::stdin()),
-        x => Box::new(File::open(x).await?),
+        x => Box::new(File::open(x)?),
       };
-      ingest.changeset(o5c_stream).await?;
+      ingest.changeset(o5c_stream)?;
       eprintln![""];
       */
     },
@@ -131,9 +131,9 @@ async fn run() -> Result<(),Error> {
   Ok(())
 }
 
-async fn open_eyros(file: &std::path::Path) -> Result<EDB,Error> {
+fn open_eyros(file: &std::path::Path) -> Result<EDB,Error> {
   eyros::Setup::from_path(&std::path::Path::new(&file))
-    .build().await
+    .build()
 }
 
 fn usage(args: &[String]) -> String {
@@ -202,18 +202,18 @@ impl Monitor {
     let p = progress.clone();
     let stop = Arc::new(RwLock::new(false));
     let s = stop.clone();
-    task::spawn(async move {
+    std::thread::spawn(move || {
       let mut interval = stream::interval(std::time::Duration::from_secs(1));
       let mut first = true;
-      while let Some(_) = interval.next().await {
+      while let Some(_) = interval.next() {
         {
-          let pr = p.read().await;
+          let pr = p.read();
           Self::print(&pr, first);
           first = false;
         }
-        p.write().await.tick();
-        if *s.read().await {
-          let pr = p.read().await;
+        p.write().tick();
+        if *s.read() {
+          let pr = p.read();
           Self::print(&pr, false);
           break
         }
@@ -233,7 +233,7 @@ impl Monitor {
       eprint!["{}{}", parts.join(""), p];
     }
   }
-  pub async fn end(&mut self) {
-    *self.stop.write().await = true;
+  pub fn end(&mut self) {
+    *self.stop.write() = true;
   }
 }

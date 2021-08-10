@@ -1,6 +1,5 @@
 use crate::encoder::{Decoded,DecodedNode,DecodedWay,DecodedRelation};
 use crate::Error;
-// use std::collections::HashMap;
 use ahash::AHashMap as HashMap;
 use desert::{varint,CountBytesBE,ToBytesBE,FromBytesBE};
 use osmxq::{Record,RecordId,Position};

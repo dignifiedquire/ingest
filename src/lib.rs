@@ -1,5 +1,5 @@
-#![warn(clippy::future_not_send)]
-#![feature(async_closure,backtrace)]
+#![feature(backtrace)]
+
 pub mod encoder;
 pub use encoder::*;
 pub mod error;
@@ -13,8 +13,9 @@ pub use progress::Progress;
 pub const BACKREF_PREFIX: u8 = 1;
 pub const REF_PREFIX: u8 = 2;
 
-use std::collections::HashMap;
-use async_std::{sync::{Arc,Mutex,RwLock},task,channel,prelude::*};
+use ahash::AHashMap as HashMap;
+use std::{sync::{Arc,Mutex,RwLock}};
+use crossbeam_channel as channel;
 
 type NodeDeps = HashMap<u64,(f32,f32)>;
 type WayDeps = HashMap<u64,Vec<u64>>;
@@ -41,8 +42,8 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
       progress: Arc::new(RwLock::new(Progress::new(stages))),
     }
   }
-  pub async fn load_pbf<R: std::io::Read+Send+'static>(&mut self, pbf: R) -> Result<(),Error> {
-    self.progress.write().await.start("pbf");
+  pub fn load_pbf<R: std::io::Read+Send+'static>(&mut self, pbf: R) -> Result<(),Error> {
+    self.progress.write().start("pbf");
     let (sender,receiver) = channel::bounded::<Decoded>(1_000);
 
     let reader = std::thread::spawn(move || {
@@ -51,9 +52,7 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
         move |element| {
           let r = Decoded::from_pbf_element(&element).unwrap();
           let s = sc.clone();
-          task::block_on(async move {
-            s.send(r).await.unwrap();
-          });
+          s.send(r).unwrap();
         }, 
         || {},
         |_, _| {},
@@ -61,52 +60,51 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
       sender.close();
     });
 
-    let writer = {
+    {
       const BATCH_SIZE: usize = 100_000;
-      
-      let xqc = self.xq.clone();
-      let progress = self.progress.clone();
-          
-      task::spawn(async move {
-          let mut records = Vec::with_capacity(BATCH_SIZE);
-          while let Ok(record) = receiver.recv().await {
-              records.push(record);
-              if records.len() >= BATCH_SIZE {
-                  if let Err(err) = xqc.lock().await.add_records(&records).await {
-                      progress.write().await.push_err("pbf", &err);
-                  }
-                  progress.write().await.add("pbf", records.len());
-                  records.clear();
-              }
-          }
-          if !records.is_empty() {
-              if let Err(err) = xqc.lock().await.add_records(&records).await {
-                  progress.write().await.push_err("pbf", &err);
-              }
-              progress.write().await.add("pbf", records.len());
-          }
-          {
-              let mut xq = xqc.lock().await;
-              xq.finish().await.unwrap();
-              xq.flush().await.unwrap();
-          }
-      })
-    };
+      let mut records = Vec::with_capacity(BATCH_SIZE);      
 
-    writer.join(task::spawn_blocking(move || { reader.join().unwrap() })).await;
+      while let Ok(record) = receiver.recv() {
+          records.push(record);
+          if records.len() >= BATCH_SIZE {
+              let mut xq = xqc.lock().unwrap();
+              if let Err(err) = xq.add_records(&records) {
+                  progress.write().push_err("pbf", &err);
+              }
+              progress.write().add("pbf", records.len());
+              records.clear();
+          }
+      }
+      if !records.is_empty() {
+          let mut xq = xqc.lock().unwrap();
+          let res = xq.add_records(&records);
 
-    self.progress.write().await.end("pbf");
+          if let Err(err) = res {
+              progress.write().push_err("pbf", &err);
+          }
+          progress.write().add("pbf", records.len());
+      }
+      {
+          let mut xq = xqc.lock().unwrap();
+          xq.finish().unwrap();
+          xq.flush().unwrap();
+      }
+    }
+
+    reader.join().unwrap();
+
+    self.progress.write().end("pbf");
 
     Ok(())
   }
 
   // loop over the db, denormalize the records, georender-pack the data into eyros
-  pub async fn process(&mut self) -> () {
-    self.progress.write().await.start("process");
-    let mut xq = self.xq.lock().await;
+  pub fn process(&mut self) -> () {
+    self.progress.write().start("process");
+    let mut xq = self.xq.lock();
     let quad_ids = xq.get_quad_ids();
     for q_id in quad_ids {
-      let records = xq.read_quad_denorm(q_id).await.unwrap();
+      let records = xq.read_quad_denorm(q_id).unwrap();
       let rlen = records.len();
       let mut batch = Vec::with_capacity(records.len());
       for (_r_id,r,deps) in records {
@@ -198,10 +196,10 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
           },
         }
       }
-      self.db.batch(&batch).await.unwrap();
-      self.progress.write().await.add("process", rlen);
+      self.db.batch(&batch).unwrap();
+      self.progress.write().add("process", rlen);
     }
-    self.db.sync().await.unwrap();
-    self.progress.write().await.end("process");
+    self.db.sync().unwrap();
+    self.progress.write().end("process");
   }
 }

@@ -1,4 +1,4 @@
-use peermaps_ingest::{Ingest,EStore,LStore};
+/*use peermaps_ingest::{Ingest,EStore,LStore};
 use rocksdb::{Options,DBWithThreadMode,MultiThreaded};
 use async_std::{prelude::*,fs::File};
 use tempfile::Builder as Tmpfile;
@@ -412,3 +412,4 @@ fn open(path: &std::path::Path) -> Result<DB,Error> {
 fn get_type(key: &str) -> u64 {
   *georender_pack::osm_types::get_types().get(key).unwrap()
 }
+*/
