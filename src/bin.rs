@@ -7,7 +7,7 @@ use osmxq::XQ;
 type Error = Box<dyn std::error::Error+Send+Sync>;
 
 fn main() -> Result<(),Error> {
-  if let Err(err) = run().await {
+  if let Err(err) = run() {
     match err.backtrace().map(|bt| (bt,bt.status())) {
       Some((bt,std::backtrace::BacktraceStatus::Captured)) => {
         eprint!["{}\n{}", err, bt];
@@ -55,7 +55,7 @@ fn run() -> Result<(),Error> {
         "-" => Box::new(std::io::stdin()),
         x => Box::new(std::fs::File::open(x)?),
       };
-      let mut p = Monitor::open(ingest.progress.clone());
+      let p = Monitor::open(ingest.progress.clone());
       ingest.load_pbf(pbf_stream)?;
       ingest.process();
       p.end();
@@ -80,7 +80,7 @@ fn run() -> Result<(),Error> {
         "-" => Box::new(std::io::stdin()),
         x => Box::new(std::fs::File::open(x)?),
       };
-      let mut p = Monitor::open(ingest.progress.clone());
+      let p = Monitor::open(ingest.progress.clone());
       ingest.load_pbf(pbf_stream)?;
       p.end();
       eprintln![""];
@@ -96,7 +96,7 @@ fn run() -> Result<(),Error> {
         open_eyros(&std::path::Path::new(&edb_dir.unwrap()))?,
         &["process"]
       );
-      let mut p = Monitor::open(ingest.progress.clone());
+      let p = Monitor::open(ingest.progress.clone());
       ingest.process();
       p.end();
       eprintln![""];
@@ -132,8 +132,9 @@ fn run() -> Result<(),Error> {
 }
 
 fn open_eyros(file: &std::path::Path) -> Result<EDB,Error> {
-  eyros::Setup::from_path(&std::path::Path::new(&file))
-    .build()
+  async_std::task::block_on(async move {
+    eyros::Setup::from_path(&std::path::Path::new(&file)).build().await
+  })
 }
 
 fn usage(args: &[String]) -> String {
@@ -203,17 +204,17 @@ impl Monitor {
     let stop = Arc::new(RwLock::new(false));
     let s = stop.clone();
     std::thread::spawn(move || {
-      let mut interval = stream::interval(std::time::Duration::from_secs(1));
       let mut first = true;
-      while let Some(_) = interval.next() {
+      loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
         {
-          let pr = p.read();
+          let pr = p.read().unwrap();
           Self::print(&pr, first);
           first = false;
         }
-        p.write().tick();
-        if *s.read() {
-          let pr = p.read();
+        p.write().unwrap().tick();
+        if *s.read().unwrap() {
+          let pr = p.read().unwrap();
           Self::print(&pr, false);
           break
         }
@@ -233,7 +234,7 @@ impl Monitor {
       eprint!["{}{}", parts.join(""), p];
     }
   }
-  pub fn end(&mut self) {
-    *self.stop.write() = true;
+  pub fn end(&self) {
+    *self.stop.write().unwrap() = true;
   }
 }

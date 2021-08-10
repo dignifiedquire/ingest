@@ -13,7 +13,7 @@ pub use progress::Progress;
 pub const BACKREF_PREFIX: u8 = 1;
 pub const REF_PREFIX: u8 = 2;
 
-use ahash::AHashMap as HashMap;
+use std::collections::HashMap;
 use std::{sync::{Arc,Mutex,RwLock}};
 use crossbeam_channel as channel;
 
@@ -28,7 +28,7 @@ pub type EDB = eyros::DB<random_access_disk::RandomAccessDisk,T,P,V>;
 
 pub struct Ingest<S> where S: osmxq::RW {
   xq: Arc<Mutex<XQ<S,R>>>,
-  db: EDB,
+  db: Arc<Mutex<EDB>>,
   place_other: u64,
   pub progress: Arc<RwLock<Progress>>,
 }
@@ -37,13 +37,13 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
   pub fn new(xq: XQ<S,R>, db: EDB, stages: &[&str]) -> Self {
     Self {
       xq: Arc::new(Mutex::new(xq)),
-      db,
+      db: Arc::new(Mutex::new(db)),
       place_other: *georender_pack::osm_types::get_types().get("place.other").unwrap(),
       progress: Arc::new(RwLock::new(Progress::new(stages))),
     }
   }
   pub fn load_pbf<R: std::io::Read+Send+'static>(&mut self, pbf: R) -> Result<(),Error> {
-    self.progress.write().start("pbf");
+    self.progress.write().unwrap().start("pbf");
     let (sender,receiver) = channel::bounded::<Decoded>(1_000);
 
     let reader = std::thread::spawn(move || {
@@ -57,7 +57,6 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
         || {},
         |_, _| {},
       ).unwrap();
-      sender.close();
     });
 
     {
@@ -67,25 +66,25 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
       while let Ok(record) = receiver.recv() {
           records.push(record);
           if records.len() >= BATCH_SIZE {
-              let mut xq = xqc.lock().unwrap();
+              let mut xq = self.xq.lock().unwrap();
               if let Err(err) = xq.add_records(&records) {
-                  progress.write().push_err("pbf", &err);
+                  self.progress.write().unwrap().push_err("pbf", &err);
               }
-              progress.write().add("pbf", records.len());
+              self.progress.write().unwrap().add("pbf", records.len());
               records.clear();
           }
       }
       if !records.is_empty() {
-          let mut xq = xqc.lock().unwrap();
+          let mut xq = self.xq.lock().unwrap();
           let res = xq.add_records(&records);
 
           if let Err(err) = res {
-              progress.write().push_err("pbf", &err);
+              self.progress.write().unwrap().push_err("pbf", &err);
           }
-          progress.write().add("pbf", records.len());
+          self.progress.write().unwrap().add("pbf", records.len());
       }
       {
-          let mut xq = xqc.lock().unwrap();
+          let mut xq = self.xq.lock().unwrap();
           xq.finish().unwrap();
           xq.flush().unwrap();
       }
@@ -93,15 +92,15 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
 
     reader.join().unwrap();
 
-    self.progress.write().end("pbf");
+    self.progress.write().unwrap().end("pbf");
 
     Ok(())
   }
 
   // loop over the db, denormalize the records, georender-pack the data into eyros
   pub fn process(&mut self) -> () {
-    self.progress.write().start("process");
-    let mut xq = self.xq.lock();
+    self.progress.write().unwrap().start("process");
+    let mut xq = self.xq.lock().unwrap();
     let quad_ids = xq.get_quad_ids();
     for q_id in quad_ids {
       let records = xq.read_quad_denorm(q_id).unwrap();
@@ -196,10 +195,19 @@ impl<S> Ingest<S> where S: osmxq::RW+'static {
           },
         }
       }
-      self.db.batch(&batch).unwrap();
-      self.progress.write().add("process", rlen);
+      let db = self.db.clone();
+      async_std::task::block_on(async move {
+        let mut db = db.lock().unwrap();
+        db.batch(&batch).await.unwrap();
+      });
+      self.progress.write().unwrap().add("process", rlen);
     }
-    self.db.sync().unwrap();
-    self.progress.write().end("process");
+
+    let db = self.db.clone();
+    async_std::task::block_on(async move {
+      let mut db = db.lock().unwrap();
+      db.sync().await.unwrap();
+    });
+    self.progress.write().unwrap().end("process");
   }
 }
